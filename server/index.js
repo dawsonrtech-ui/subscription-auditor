@@ -148,9 +148,13 @@ app.get('/api/summary', authenticate, async (req, res) => {
     if (!budgetVsActual[cat]) budgetVsActual[cat] = { actual: 0, budget };
   });
 
+  const cancelled = await queryAll('SELECT * FROM subscriptions WHERE user_id = $1 AND status = $2', [req.user.id, 'cancelled']);
+  const cancelledMonthly = cancelled.reduce((s, x) => s + (x.billing_cycle === 'monthly' ? Number(x.cost) : x.billing_cycle === 'yearly' ? Number(x.cost) / 12 : Number(x.cost)), 0);
+
   res.json({
     total: Math.round(total * 100) / 100, monthly: Math.round(monthly * 100) / 100,
-    count: subs.length, upcoming, annual, budgetVsActual, byCategory
+    count: subs.length, upcoming, annual, budgetVsActual, byCategory,
+    cancelledCount: cancelled.length, cancelledMonthly: Math.round(cancelledMonthly * 100) / 100, cancelled: cancelled
   });
 });
 

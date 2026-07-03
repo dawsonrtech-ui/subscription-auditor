@@ -206,7 +206,7 @@ function App() {
 
       <div className="border-b border-gray-700 px-6 flex gap-6 text-sm overflow-x-auto">
         {tabs.map(t => (
-          <button key={t} onClick={() => { setActiveTab(t); if (t === 'budget') fetchPriceCompares(); if (t === 'dashboard') { fetchSummary(); fetchProjection() } }}
+          <button key={t} onClick={() => { setActiveTab(t); if (t === 'budget' || t === 'dashboard') fetchPriceCompares(); if (t === 'dashboard') { fetchSummary(); fetchProjection() } }}
             className={`pb-3 pt-3 border-b-2 font-medium capitalize whitespace-nowrap cursor-pointer transition-colors ${activeTab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
             {t === 'dashboard' ? '📊 Dash' : t === 'bank' ? '🏦 Bank' : t === 'gmail' ? '📧 Gmail' : t === 'alerts' ? '🔔 Alerts' : t === 'budget' ? '💰 Budget' : '📋 Subs'}
           </button>
@@ -354,6 +354,97 @@ function App() {
                   )}
                 </div>
               </>
+            )}
+
+            {/* Top 5 Most Expensive */}
+            {subs.filter(s => s.status === 'active').length > 0 && (
+              <div className="bg-gray-800 rounded-xl p-6">
+                <h2 className="text-lg font-semibold mb-3">Top 5 Most Expensive</h2>
+                <div className="space-y-2">
+                  {subs.filter(s => s.status === 'active').sort((a, b) => Number(b.cost) - Number(a.cost)).slice(0, 5).map(s => (
+                    <div key={s.id} className="flex justify-between items-center p-3 bg-gray-700/40 rounded-lg">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-2 h-2 rounded-full bg-red-400 flex-shrink-0"></span>
+                        <span className="font-medium truncate">{s.name}</span>
+                        <span className="text-xs bg-gray-600 px-2 py-0.5 rounded flex-shrink-0">{s.category}</span>
+                      </div>
+                      <div className="text-right flex-shrink-0 ml-3">
+                        <span className="font-mono">${Number(s.cost).toFixed(2)}</span>
+                        <span className="text-xs text-gray-400 ml-1">/{s.billing_cycle === 'yearly' ? 'yr' : s.billing_cycle === 'weekly' ? 'wk' : 'mo'}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Cancelled Subs */}
+            {summary && summary.cancelledCount > 0 && (
+              <div className="bg-gray-800 rounded-xl p-6">
+                <h2 className="text-lg font-semibold mb-3">Cancelled Subs</h2>
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  <div className="bg-gray-700/40 rounded-xl p-4 text-center">
+                    <p className="text-sm text-gray-400">Cancelled</p>
+                    <p className="text-2xl font-bold text-gray-400">{summary.cancelledCount}</p>
+                  </div>
+                  <div className="bg-gray-700/40 rounded-xl p-4 text-center">
+                    <p className="text-sm text-gray-400">Saved /mo</p>
+                    <p className="text-2xl font-bold text-green-400">${summary.cancelledMonthly.toFixed(2)}</p>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {summary.cancelled.map(s => (
+                    <div key={s.id} className="flex justify-between p-3 bg-gray-700/30 rounded-lg opacity-70">
+                      <span className="font-medium">{s.name}</span>
+                      <span className="font-mono text-sm line-through decoration-red-400">${Number(s.cost).toFixed(2)}/{s.billing_cycle}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Savings Opportunities */}
+            {priceCompares.length > 0 && priceCompares.filter(p => p.diff > 0).length > 0 && (
+              <div className="bg-gray-800 rounded-xl p-6">
+                <h2 className="text-lg font-semibold mb-3">Savings Opportunities</h2>
+                <p className="text-sm text-gray-400 mb-4">You're paying above average for these services.</p>
+                <div className="space-y-2">
+                  {priceCompares.filter(p => p.diff > 0).map((p, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 bg-red-900/20 rounded-lg border border-red-900/30">
+                      <div>
+                        <p className="font-medium">{p.name}</p>
+                        <p className="text-xs text-gray-400">You pay: ${p.userCost.toFixed(2)}/{p.userCycle}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm text-red-400 font-mono">+${p.diff.toFixed(2)} above avg</p>
+                        <p className="text-xs text-gray-400">Avg: ${p.avgMonthly.toFixed(2)}/mo</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Renewal Heatmap */}
+            {subs.filter(s => s.status === 'active' && s.next_billing).length > 0 && (
+              <div className="bg-gray-800 rounded-xl p-6">
+                <h2 className="text-lg font-semibold mb-3">Renewal Days</h2>
+                <p className="text-sm text-gray-400 mb-3">When your subscriptions renew each month.</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {Array.from({ length: 31 }, (_, i) => i + 1).map(day => {
+                    const count = subs.filter(s => s.status === 'active' && s.next_billing && new Date(s.next_billing).getDate() === day).length
+                    if (count === 0) return <div key={day} className="w-9 h-9 rounded-lg bg-gray-700/30 flex items-center justify-center text-xs text-gray-600">{day}</div>
+                    const intensity = Math.min(1, count / 3)
+                    return (
+                      <div key={day} className="w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold text-white"
+                        style={{ backgroundColor: `rgba(59, 130, 246, ${0.3 + intensity * 0.7})` }}
+                        title={`${count} renewal${count > 1 ? 's' : ''}`}>
+                        {day}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
             )}
           </div>
         )}
