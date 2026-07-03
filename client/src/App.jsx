@@ -37,7 +37,7 @@ function App() {
 
   const categories = ['Streaming', 'SaaS', 'Gym', 'Insurance', 'Utilities', 'Software', 'Cloud', 'Other']
   const cycles = ['monthly', 'yearly', 'weekly']
-  const tabs = ['subscriptions', 'budget', 'bank', 'gmail', 'alerts']
+  const tabs = ['dashboard', 'subscriptions', 'budget', 'bank', 'gmail', 'alerts']
 
   function showToast(msg, type = 'info') {
     setToast({ msg, type })
@@ -202,14 +202,99 @@ function App() {
 
       <div className="border-b border-gray-700 px-6 flex gap-6 text-sm overflow-x-auto">
         {tabs.map(t => (
-          <button key={t} onClick={() => { setActiveTab(t); if (t === 'budget') fetchPriceCompares() }}
+          <button key={t} onClick={() => { setActiveTab(t); if (t === 'budget') fetchPriceCompares(); if (t === 'dashboard') fetchSummary() }}
             className={`pb-3 pt-3 border-b-2 font-medium capitalize whitespace-nowrap cursor-pointer transition-colors ${activeTab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
-            {t === 'bank' ? '🏦 Bank' : t === 'gmail' ? '📧 Gmail' : t === 'alerts' ? '🔔 Alerts' : t === 'budget' ? '💰 Budget' : '📋 Subs'}
+            {t === 'dashboard' ? '📊 Dash' : t === 'bank' ? '🏦 Bank' : t === 'gmail' ? '📧 Gmail' : t === 'alerts' ? '🔔 Alerts' : t === 'budget' ? '💰 Budget' : '📋 Subs'}
           </button>
         ))}
       </div>
 
       <main className="max-w-5xl mx-auto p-6 space-y-6">
+
+        {/* ═══ DASHBOARD TAB ═══ */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-sm text-gray-400">Active Subs</p>
+                <p className="text-3xl font-bold">{summary?.count ?? 0}</p>
+              </div>
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-sm text-gray-400">Monthly</p>
+                <p className="text-3xl font-bold text-blue-400">${(summary?.monthly ?? 0).toFixed(2)}</p>
+              </div>
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-sm text-gray-400">Yearly</p>
+                <p className="text-3xl font-bold text-purple-400">${((summary?.monthly ?? 0) * 12).toFixed(2)}</p>
+              </div>
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-sm text-gray-400">Due This Week</p>
+                <p className={`text-3xl font-bold ${(summary?.upcoming?.length ?? 0) > 0 ? 'text-yellow-400' : ''}`}>{summary?.upcoming?.length ?? 0}</p>
+              </div>
+            </div>
+
+            {summary && Object.keys(summary.byCategory).length > 0 && (
+              <div className="bg-gray-800 rounded-xl p-6">
+                <h2 className="text-lg font-semibold mb-3">Spending by Category</h2>
+                <div className="space-y-3">
+                  {Object.entries(summary.byCategory).map(([cat, amount]) => {
+                    const pct = Math.min(100, (amount / summary.total) * 100)
+                    return (
+                      <div key={cat}>
+                        <div className="flex justify-between text-sm mb-1">
+                          <span>{cat}</span>
+                          <span className="font-mono">${amount.toFixed(2)}</span>
+                        </div>
+                        <div className="bg-gray-700 rounded-full h-4">
+                          <div className="bg-blue-500 h-4 rounded-full" style={{ width: pct + '%' }}></div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {summary && Object.keys(summary.budgetVsActual).length > 0 && (
+              <div className="bg-gray-800 rounded-xl p-6">
+                <h2 className="text-lg font-semibold mb-3">Budget vs Actual</h2>
+                <div className="space-y-3">
+                  {Object.entries(summary.budgetVsActual).filter(([, v]) => v.budget > 0).map(([cat, v]) => {
+                    const pct = Math.min(100, (v.actual / v.budget) * 100)
+                    return (
+                      <div key={cat}>
+                        <div className="flex justify-between text-sm mb-1">
+                          <span>{cat}</span>
+                          <span className={`font-mono ${v.actual > v.budget ? 'text-red-400' : 'text-green-400'}`}>
+                            ${v.actual.toFixed(2)} / ${v.budget.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="bg-gray-700 rounded-full h-4 relative overflow-hidden">
+                          <div className={`h-full rounded-full ${v.actual > v.budget ? 'bg-red-500' : 'bg-green-500'}`}
+                            style={{ width: pct + '%' }}></div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {summary && summary.upcoming.length > 0 && (
+              <div className="bg-gray-800 rounded-xl p-6">
+                <h2 className="text-lg font-semibold mb-3">Upcoming Renewals</h2>
+                <div className="space-y-2">
+                  {summary.upcoming.map(s => (
+                    <div key={s.id} className="flex justify-between p-3 bg-gray-700/40 rounded-lg">
+                      <span className="font-medium">{s.name}</span>
+                      <span className="font-mono">${s.cost.toFixed(2)} — {s.next_billing}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ═══ SUBS TAB ═══ */}
         {activeTab === 'subscriptions' && (
