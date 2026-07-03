@@ -1,0 +1,15 @@
+{
+  "name": "subscription-auditor",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && node --env-file=.env --watch index.js",
+    "dev:client": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "start": "cd server && node --env-file=.env index.js",
+    "deploy": "npm run build && npm run start",
+    "docker-deploy": "docker compose up --build -d"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
