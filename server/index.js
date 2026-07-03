@@ -5,10 +5,12 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, 'data.db');
+const DB_DIR = process.env.RAILWAY_VOLUME_MOUNT || __dirname;
+if (!existsSync(DB_DIR)) mkdirSync(DB_DIR, { recursive: true });
+const DB_PATH = join(DB_DIR, 'data.db');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
