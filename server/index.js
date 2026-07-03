@@ -154,6 +154,33 @@ app.get('/api/summary', authenticate, async (req, res) => {
   });
 });
 
+// ── Projection / Spending Trends ──
+app.get('/api/projection', authenticate, async (req, res) => {
+  const subs = await queryAll('SELECT * FROM subscriptions WHERE user_id = $1 AND status = $2', [req.user.id, 'active']);
+  const now = new Date();
+  const months = [];
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    let total = 0;
+    const byCat = {};
+    subs.forEach(s => {
+      const cost = Number(s.cost);
+      const cycle = s.billing_cycle;
+      if (cycle === 'monthly') { total += cost; byCat[s.category] = (byCat[s.category] || 0) + cost; }
+      else if (cycle === 'yearly' && s.next_billing) {
+        const nb = new Date(s.next_billing);
+        if (nb.getMonth() === d.getMonth() && nb.getFullYear() === d.getFullYear()) { total += cost; byCat[s.category] = (byCat[s.category] || 0) + cost; }
+      } else if (cycle === 'weekly') { const w = cost * 4.33; total += w; byCat[s.category] = (byCat[s.category] || 0) + w; }
+    });
+    months.push({ month: d.toLocaleString('en', { month: 'short', year: 'numeric' }), total: Math.round(total * 100) / 100, byCategory: byCat });
+  }
+  const annualTotal = months.reduce((s, m) => s + m.total, 0);
+  const annualByCategory = {};
+  months.forEach(m => Object.entries(m.byCategory).forEach(([cat, amt]) => { annualByCategory[cat] = (annualByCategory[cat] || 0) + amt; }));
+  Object.keys(annualByCategory).forEach(k => { annualByCategory[k] = Math.round(annualByCategory[k] * 100) / 100; });
+  res.json({ months, annualTotal: Math.round(annualTotal * 100) / 100, annualByCategory });
+});
+
 // ── Budgets ──
 app.get('/api/budgets', authenticate, async (req, res) => {
   res.json(await queryAll('SELECT * FROM budgets WHERE user_id = $1', [req.user.id]));

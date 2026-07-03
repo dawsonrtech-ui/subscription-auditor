@@ -101,6 +101,10 @@ function App() {
   async function fetchBudgets() { try { setBudgets(await api('/budgets')) } catch {} }
   async function setBudget(cat, val) { await api('/budgets', { method: 'PUT', body: JSON.stringify({ category: cat, monthly_budget: parseFloat(val) || 0 }) }); fetchBudgets(); fetchSummary() }
 
+  // Projection / Spending Trends
+  const [projection, setProjection] = useState(null)
+  async function fetchProjection() { try { setProjection(await api('/projection')) } catch {} }
+
   // Price compare
   async function fetchPriceCompares() { try { setPriceCompares(await api('/price-compare')) } catch {} }
 
@@ -202,7 +206,7 @@ function App() {
 
       <div className="border-b border-gray-700 px-6 flex gap-6 text-sm overflow-x-auto">
         {tabs.map(t => (
-          <button key={t} onClick={() => { setActiveTab(t); if (t === 'budget') fetchPriceCompares(); if (t === 'dashboard') fetchSummary() }}
+          <button key={t} onClick={() => { setActiveTab(t); if (t === 'budget') fetchPriceCompares(); if (t === 'dashboard') { fetchSummary(); fetchProjection() } }}
             className={`pb-3 pt-3 border-b-2 font-medium capitalize whitespace-nowrap cursor-pointer transition-colors ${activeTab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
             {t === 'dashboard' ? '📊 Dash' : t === 'bank' ? '🏦 Bank' : t === 'gmail' ? '📧 Gmail' : t === 'alerts' ? '🔔 Alerts' : t === 'budget' ? '💰 Budget' : '📋 Subs'}
           </button>
@@ -292,6 +296,64 @@ function App() {
                   ))}
                 </div>
               </div>
+            )}
+
+            {projection && (
+              <>
+                <div className="bg-gray-800 rounded-xl p-6">
+                  <h2 className="text-lg font-semibold mb-3">12-Month Spending Trend</h2>
+                  <div className="space-y-2">
+                    {projection.months.map((m, i) => {
+                      const maxTotal = Math.max(...projection.months.map(x => x.total), 1)
+                      const pct = Math.max(3, (m.total / maxTotal) * 100)
+                      return (
+                        <div key={i}>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="text-gray-400">{m.month}</span>
+                            <span className="font-mono">${m.total.toFixed(2)}</span>
+                          </div>
+                          <div className="bg-gray-700 rounded-full h-5 relative overflow-hidden">
+                            <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-purple-500" style={{ width: pct + '%' }}></div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="bg-gray-800 rounded-xl p-6">
+                  <h2 className="text-lg font-semibold mb-3">Annual Projection</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div className="bg-gray-700/40 rounded-xl p-4 text-center">
+                      <p className="text-sm text-gray-400">Total Per Year</p>
+                      <p className="text-3xl font-bold text-purple-400">${projection.annualTotal.toFixed(2)}</p>
+                    </div>
+                    <div className="bg-gray-700/40 rounded-xl p-4 text-center">
+                      <p className="text-sm text-gray-400">Per Day</p>
+                      <p className="text-3xl font-bold text-blue-400">$${(projection.annualTotal / 365).toFixed(2)}</p>
+                    </div>
+                  </div>
+                  {Object.keys(projection.annualByCategory).length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-sm text-gray-400 mb-2">By Category</p>
+                      {Object.entries(projection.annualByCategory).map(([cat, amt]) => {
+                        const pct = Math.min(100, (amt / projection.annualTotal) * 100)
+                        return (
+                          <div key={cat}>
+                            <div className="flex justify-between text-sm mb-1">
+                              <span>{cat}</span>
+                              <span className="font-mono">${amt.toFixed(2)}</span>
+                            </div>
+                            <div className="bg-gray-700 rounded-full h-4">
+                              <div className="h-full rounded-full bg-purple-500" style={{ width: pct + '%' }}></div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
             )}
           </div>
         )}
