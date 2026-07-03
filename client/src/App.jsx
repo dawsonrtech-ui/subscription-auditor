@@ -448,7 +448,7 @@ function App() {
                       <div className="flex-1 min-w-0">
                         <p className="font-medium">{d.service_name}</p>
                         <p className="text-xs text-gray-400 truncate">{d.email_subject}</p>
-                        {d.amount && <p className="text-sm font-mono mt-1">${parseFloat(d.amount).toFixed(2)}/mo</p>}
+                        {d.amount != null && <p className="text-sm font-mono mt-1">${parseFloat(d.amount).toFixed(2)}/mo</p>}
                       </div>
                       <div className="flex gap-2 flex-shrink-0 ml-3">
                         <button onClick={() => convertGmailSub(d.id)} className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm cursor-pointer">Add</button>
@@ -472,7 +472,7 @@ function App() {
                 <div>
                   <label className="text-sm text-gray-400 block mb-1">Notify me before renewal:</label>
                   <div className="flex items-center gap-3">
-                    <input type="range" min="1" max="14" value={notifyDays} onChange={e => updateNotifyDays(parseInt(e.target.value))} className="w-48 accent-blue-500 cursor-pointer" />
+                    <input type="range" min="1" max="14" value={notifyDays} onChange={e => setNotifyDays(parseInt(e.target.value))} onMouseUp={e => updateNotifyDays(parseInt(e.target.value))} onTouchEnd={e => updateNotifyDays(parseInt(e.target.value))} className="w-48 accent-blue-500 cursor-pointer" />
                     <span className="font-mono text-lg">{notifyDays} day{notifyDays > 1 ? 's' : ''}</span>
                   </div>
                 </div>

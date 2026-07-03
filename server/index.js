@@ -122,8 +122,9 @@ app.post('/api/subscriptions', authenticate, (req, res) => {
   if (!name || cost === undefined) return res.status(400).json({ error: 'Name and cost required' });
   db.run('INSERT INTO subscriptions (user_id, name, category, cost, billing_cycle, next_billing, notes, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     [req.user.id, name, category || 'Other', cost, billing_cycle || 'monthly', next_billing || null, notes || '', source || 'manual']);
+  const id = db.exec('SELECT last_insert_rowid()')[0]?.values?.[0]?.[0];
   saveDb();
-  res.json({ id: db.exec('SELECT last_insert_rowid()')[0].values[0][0] });
+  res.json({ id: id ?? 0 });
 });
 
 app.put('/api/subscriptions/:id', authenticate, (req, res) => {
@@ -139,6 +140,8 @@ app.put('/api/subscriptions/:id', authenticate, (req, res) => {
 app.delete('/api/subscriptions/:id', authenticate, (req, res) => {
   db.run('DELETE FROM subscriptions WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
   saveDb();
+  const changes = db.getRowsModified();
+  if (changes === 0) return res.status(404).json({ error: 'Not found' });
   res.json({ ok: true });
 });
 
