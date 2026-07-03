@@ -53,6 +53,7 @@ function App() {
         window.history.replaceState({}, '', '/')
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
   async function api(path, opts = {}) {
@@ -85,8 +86,8 @@ function App() {
   function logout() { setToken(null); setEmail(''); localStorage.removeItem('token'); setSubs([]); setSummary(null); setPlaidRecurring([]); setGmailDetected([]); showToast('Logged out', 'info') }
 
   // Subs
-  async function fetchSubs() { setSubs(await api('/subscriptions')) }
-  async function fetchSummary() { setSummary(await api('/summary')) }
+  async function fetchSubs() { try { setSubs(await api('/subscriptions')) } catch {} }
+  async function fetchSummary() { try { setSummary(await api('/summary')) } catch {} }
   async function addSub(e) {
     e.preventDefault(); const f = e.target
     try {
@@ -133,7 +134,7 @@ function App() {
     catch (err) { showToast(err.message, 'error') }
     setPlaidLoading(false)
   }
-  async function convertPlaidSub(m, name, amt) { try { await api('/plaid/convert-sub', { method: 'POST', body: JSON.stringify({ merchant_name: m, name, avg_amount: amt }) }); fetchSubs(); fetchSummary(); syncTransactions(); showToast(`Added ${m} to subscriptions`, 'success') } catch (err) { showToast(err.message, 'error') } }
+  async function convertPlaidSub(m, amt) { try { await api('/plaid/convert-sub', { method: 'POST', body: JSON.stringify({ merchant_name: m, avg_amount: amt }) }); fetchSubs(); fetchSummary(); syncTransactions(); showToast(`Added ${m} to subscriptions`, 'success') } catch (err) { showToast(err.message, 'error') } }
 
   // Gmail
   async function fetchGmailStatus() { try { const s = await api('/gmail/status'); setGmailConnected(s.connected) } catch {} }
@@ -334,7 +335,7 @@ function App() {
                     </div>
                     <div className="bg-gray-700/40 rounded-xl p-4 text-center">
                       <p className="text-sm text-gray-400">Per Day</p>
-                      <p className="text-3xl font-bold text-blue-400">$${(projection.annualTotal / 365).toFixed(2)}</p>
+                       <p className="text-3xl font-bold text-blue-400">${(projection.annualTotal / 365).toFixed(2)}</p>
                     </div>
                   </div>
                   {Object.keys(projection.annualByCategory).length > 0 && (
@@ -596,8 +597,9 @@ function App() {
                           <span className="text-xs text-gray-400">Actual: ${actual.toFixed(2)}</span>
                           <div className="flex items-center gap-1">
                             <span className="text-xs text-gray-400">Budget:</span>
-                            <input type="number" step="5" min="0" value={budgetVal || ''} placeholder="0"
-                              onChange={e => setBudget(cat, e.target.value)}
+                            <input type="number" step="5" min="0" defaultValue={budgetVal || ''} placeholder="0"
+                              onBlur={e => setBudget(cat, e.target.value)}
+                              onKeyDown={e => e.key === 'Enter' && setBudget(cat, e.target.value)}
                               className="w-20 p-1 text-sm rounded bg-gray-700 border border-gray-600 text-right font-mono outline-none focus:border-blue-500" />
                           </div>
                         </div>
@@ -677,7 +679,7 @@ function App() {
                         <p className="font-medium">{r.merchant_name || r.name}</p>
                         <p className="text-xs text-gray-400">{r.count} txns | Avg ${parseFloat(r.avg_amount).toFixed(2)}</p>
                       </div>
-                      <button onClick={() => convertPlaidSub(r.merchant_name || r.name, r.name, r.avg_amount)}
+                      <button onClick={() => convertPlaidSub(r.merchant_name || r.name, r.avg_amount)}
                         className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm cursor-pointer">Track</button>
                     </div>
                   ))}
@@ -750,7 +752,7 @@ function App() {
                 <div>
                   <label className="text-sm text-gray-400 block mb-1">Notify me before renewal:</label>
                   <div className="flex items-center gap-3">
-                    <input type="range" min="1" max="14" value={notifyDays} onChange={e => setNotifyDays(parseInt(e.target.value))} onMouseUp={e => updateNotifyDays(parseInt(e.target.value))} onTouchEnd={e => updateNotifyDays(parseInt(e.target.value))} className="w-48 accent-blue-500 cursor-pointer" />
+                    <input type="range" min="1" max="14" value={notifyDays} onChange={e => setNotifyDays(parseInt(e.target.value))} onMouseUp={e => updateNotifyDays(parseInt(e.target.value))} onTouchEnd={e => updateNotifyDays(parseInt(e.target.value))} onKeyUp={e => updateNotifyDays(parseInt(e.target.value))} className="w-48 accent-blue-500 cursor-pointer" />
                     <span className="font-mono text-lg">{notifyDays} day{notifyDays > 1 ? 's' : ''}</span>
                   </div>
                 </div>
@@ -815,12 +817,9 @@ function PlaidLinkButton({ api, plaidConnected, setPlaidConnected, showToast }) 
   const { open, ready } = usePlaidLink({ token: linkToken, onSuccess, onExit: () => { setLinkToken(null); setLoading(false) } })
 
   async function handleClick() {
-    if (!plaidConnected) {
-      setLoading(true)
-      try { const { link_token } = await api('/plaid/create-link-token', { method: 'POST' }); setLinkToken(link_token) }
-      catch (err) { showToast(err.message, 'error'); setLoading(false); return }
-    }
-    if (linkToken && ready) open()
+    setLoading(true)
+    try { const { link_token } = await api('/plaid/create-link-token', { method: 'POST' }); setLinkToken(link_token) }
+    catch (err) { showToast(err.message, 'error'); setLoading(false) }
   }
 
   useEffect(() => { if (linkToken && ready) { open(); setLoading(false) } }, [linkToken, ready, open])

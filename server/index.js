@@ -9,7 +9,8 @@ import { dirname, join } from 'path';
 const { Pool } = pkg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/subaudit', ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false });
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/subaudit';
+const pool = new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : false });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -53,7 +54,7 @@ async function initDb() {
     );
     CREATE TABLE IF NOT EXISTS plaid_tokens (
       id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), access_token TEXT NOT NULL,
-      item_id TEXT NOT NULL, institution_name TEXT DEFAULT '', created_at TEXT DEFAULT (NOW())
+      item_id TEXT NOT NULL, institution_name TEXT DEFAULT '', sync_cursor TEXT DEFAULT '', created_at TEXT DEFAULT (NOW())
     );
     CREATE TABLE IF NOT EXISTS plaid_transactions (
       id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), plaid_transaction_id TEXT,
@@ -112,6 +113,7 @@ app.get('/api/subscriptions', authenticate, async (req, res) => {
 app.post('/api/subscriptions', authenticate, async (req, res) => {
   const { name, category, cost, billing_cycle, next_billing, notes, source } = req.body;
   if (!name || cost === undefined) return res.status(400).json({ error: 'Name and cost required' });
+  if (isNaN(cost) || Number(cost) < 0) return res.status(400).json({ error: 'Cost must be a non-negative number' });
   const r = await q('INSERT INTO subscriptions (user_id, name, category, cost, billing_cycle, next_billing, notes, source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
     [req.user.id, name, category || 'Other', cost, billing_cycle || 'monthly', next_billing || null, notes || '', source || 'manual']);
   res.json({ id: r.rows[0].id });
@@ -121,6 +123,7 @@ app.put('/api/subscriptions/:id', authenticate, async (req, res) => {
   const sub = await queryOne('SELECT * FROM subscriptions WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
   if (!sub) return res.status(404).json({ error: 'Not found' });
   const { name, category, cost, billing_cycle, next_billing, status, notes } = req.body;
+  if (cost !== undefined && (isNaN(cost) || Number(cost) < 0)) return res.status(400).json({ error: 'Cost must be a non-negative number' });
   await q('UPDATE subscriptions SET name=$1, category=$2, cost=$3, billing_cycle=$4, next_billing=$5, status=$6, notes=$7 WHERE id=$8',
     [name ?? sub.name, category ?? sub.category, cost ?? sub.cost, billing_cycle ?? sub.billing_cycle, next_billing ?? sub.next_billing, status ?? sub.status, notes ?? sub.notes, req.params.id]);
   res.json({ ok: true });
@@ -137,7 +140,7 @@ app.get('/api/summary', authenticate, async (req, res) => {
   const subs = await queryAll('SELECT * FROM subscriptions WHERE user_id = $1 AND status = $2', [req.user.id, 'active']);
   const total = subs.reduce((s, x) => s + Number(x.cost), 0);
   const monthly = subs.reduce((s, x) => s + (x.billing_cycle === 'monthly' ? Number(x.cost) : x.billing_cycle === 'yearly' ? Number(x.cost) / 12 : Number(x.cost)), 0);
-  const upcoming = subs.filter(x => x.next_billing && new Date(x.next_billing) <= new Date(Date.now() + 7 * 86400000));
+  const upcoming = subs.filter(x => x.next_billing && new Date(x.next_billing + 'T00:00:00') <= new Date(Date.now() + 7 * 86400000));
   const annual = subs.filter(x => x.billing_cycle === 'yearly');
   const byCategory = {};
   subs.forEach(x => { byCategory[x.category] = (byCategory[x.category] || 0) + Number(x.cost); });
@@ -187,7 +190,7 @@ app.get('/api/projection', authenticate, async (req, res) => {
   const now = new Date();
   const months = [];
   for (let i = 0; i < 12; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + i, 1));
     let total = 0;
     const byCat = {};
     subs.forEach(s => {
@@ -195,11 +198,12 @@ app.get('/api/projection', authenticate, async (req, res) => {
       const cycle = s.billing_cycle;
       if (cycle === 'monthly') { total += cost; byCat[s.category] = (byCat[s.category] || 0) + cost; }
       else if (cycle === 'yearly' && s.next_billing) {
-        const nb = new Date(s.next_billing);
-        if (nb.getMonth() === d.getMonth() && nb.getFullYear() === d.getFullYear()) { total += cost; byCat[s.category] = (byCat[s.category] || 0) + cost; }
+        const parts = s.next_billing.split('-');
+        const nb = new Date(Date.UTC(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])));
+        if (nb.getUTCMonth() === d.getUTCMonth() && nb.getUTCFullYear() === d.getUTCFullYear()) { total += cost; byCat[s.category] = (byCat[s.category] || 0) + cost; }
       } else if (cycle === 'weekly') { const w = cost * 4.33; total += w; byCat[s.category] = (byCat[s.category] || 0) + w; }
     });
-    months.push({ month: d.toLocaleString('en', { month: 'short', year: 'numeric' }), total: Math.round(total * 100) / 100, byCategory: byCat });
+    months.push({ month: d.toLocaleString('en', { month: 'short', year: 'numeric', timeZone: 'UTC' }), total: Math.round(total * 100) / 100, byCategory: byCat });
   }
   const annualTotal = months.reduce((s, m) => s + m.total, 0);
   const annualByCategory = {};
@@ -272,9 +276,10 @@ app.get('/api/price-compare', authenticate, async (req, res) => {
 // ── Export ──
 app.get('/api/export/csv', authenticate, async (req, res) => {
   const subs = await queryAll('SELECT * FROM subscriptions WHERE user_id = $1 ORDER BY status ASC, next_billing ASC', [req.user.id]);
+  const esc = v => (v || '').replace(/"/g, '""');
   let csv = 'Name,Category,Cost,Billing Cycle,Next Billing,Status,Source,Notes\n';
   subs.forEach(s => {
-    csv += `"${s.name}","${s.category}",${s.cost},"${s.billing_cycle}","${s.next_billing || ''}","${s.status}","${s.source || ''}","${(s.notes || '').replace(/"/g, '""')}"\n`;
+    csv += `"${esc(s.name)}","${esc(s.category)}",${s.cost},"${esc(s.billing_cycle)}","${esc(s.next_billing)}","${esc(s.status)}","${esc(s.source)}","${esc(s.notes)}"\n`;
   });
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename=subscriptions.csv');
@@ -326,13 +331,22 @@ app.post('/api/plaid/sync', authenticate, async (req, res) => {
   const allNew = [];
   for (const t of tokens) {
     try {
-      const r = await plaidClient.transactionsSync({ access_token: t.access_token });
-      for (const tx of r.data.added) {
-        const exists = await queryOne('SELECT id FROM plaid_transactions WHERE plaid_transaction_id = $1', [tx.transaction_id]);
-        if (exists) continue;
-        await q('INSERT INTO plaid_transactions (user_id, plaid_transaction_id, name, amount, date, category, merchant_name, pending) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-          [req.user.id, tx.transaction_id, tx.name, Math.abs(tx.amount), tx.date, (tx.category || []).join(', '), tx.merchant_name || '', tx.pending ? 1 : 0]);
-        allNew.push({ name: tx.name, amount: Math.abs(tx.amount), date: tx.date });
+      let hasMore = true;
+      let cursor = t.sync_cursor || '';
+      while (hasMore) {
+        const r = await plaidClient.transactionsSync({ access_token: t.access_token, cursor: cursor || undefined });
+        for (const tx of r.data.added) {
+          const exists = await queryOne('SELECT id FROM plaid_transactions WHERE plaid_transaction_id = $1', [tx.transaction_id]);
+          if (exists) continue;
+          await q('INSERT INTO plaid_transactions (user_id, plaid_transaction_id, name, amount, date, category, merchant_name, pending) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+            [req.user.id, tx.transaction_id, tx.name, Math.abs(tx.amount), tx.date, (tx.category || []).join(', '), tx.merchant_name || '', tx.pending ? 1 : 0]);
+          allNew.push({ name: tx.name, amount: Math.abs(tx.amount), date: tx.date });
+        }
+        cursor = r.data.next_cursor;
+        hasMore = r.data.has_more;
+      }
+      if (cursor) {
+        await q('UPDATE plaid_tokens SET sync_cursor=$1 WHERE id=$2', [cursor, t.id]);
       }
     } catch (err) { console.error('Plaid sync error:', err.message) }
   }
@@ -344,6 +358,7 @@ app.post('/api/plaid/sync', authenticate, async (req, res) => {
 app.post('/api/plaid/convert-sub', authenticate, async (req, res) => {
   const { merchant_name, avg_amount } = req.body;
   if (!merchant_name) return res.status(400).json({ error: 'merchant_name required' });
+  if (avg_amount !== undefined && (isNaN(avg_amount) || Number(avg_amount) < 0)) return res.status(400).json({ error: 'Invalid amount' });
   const exists = await queryOne('SELECT id FROM subscriptions WHERE user_id=$1 AND name=$2', [req.user.id, merchant_name]);
   if (exists) return res.status(400).json({ error: 'Already added' });
   await q('INSERT INTO subscriptions (user_id, name, category, cost, billing_cycle, source) VALUES ($1,$2,$3,$4,$5,$6)', [req.user.id, merchant_name, 'Other', avg_amount || 0, 'monthly', 'plaid']);
@@ -400,7 +415,7 @@ app.post('/api/gmail/scan', authenticate, async (req, res) => {
       oauth2.setCredentials(credentials);
     }
     const gmail = google.gmail({ version: 'v1', auth: oauth2 });
-    const listRes = await gmail.users.messages.list({ userId: 'me', q: `after:${new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]}`, maxResults: 20 });
+    const listRes = await gmail.users.messages.list({ userId: 'me', q: `after:${new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]}`, maxResults: 100 });
     const messages = listRes.data.messages || [];
     const detected = [];
     for (const msg of messages) {
@@ -430,8 +445,9 @@ app.get('/api/gmail/detected', authenticate, async (req, res) => {
 app.post('/api/gmail/convert', authenticate, async (req, res) => {
   const d = await queryOne('SELECT * FROM detected_subs_from_email WHERE id=$1 AND user_id=$2', [req.body.detected_id, req.user.id]);
   if (!d) return res.status(404).json({ error: 'Not found' });
+  const amt = d.amount != null ? Math.max(0, Number(d.amount)) : 0;
   await q('INSERT INTO subscriptions (user_id, name, category, cost, billing_cycle, source, notes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-    [req.user.id, d.service_name, 'Other', d.amount || 0, d.billing_cycle, 'gmail', 'From: ' + d.email_subject]);
+    [req.user.id, d.service_name, 'Other', amt, d.billing_cycle, 'gmail', 'From: ' + d.email_subject]);
   await q('UPDATE detected_subs_from_email SET status=$1 WHERE id=$2', ['converted', req.body.detected_id]);
   res.json({ ok: true });
 });
