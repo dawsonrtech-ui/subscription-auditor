@@ -6,6 +6,7 @@
     "dev:client": "cd client && npm run dev",
     "build": "cd client && npm run build",
     "start": "cd server && node --env-file=.env index.js",
+    "test": "cd server && node test-api.mjs",
     "deploy": "npm run build && npm run start",
     "docker-deploy": "docker compose up --build -d"
   },
