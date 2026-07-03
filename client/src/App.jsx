@@ -361,7 +361,7 @@ function App() {
             )}
 
             {/* Cost History */}
-            {costHistory.length > 1 && (
+            {costHistory.length > 0 && (
               <div className="bg-gray-800 rounded-xl p-6">
                 <h2 className="text-lg font-semibold mb-3">Cost Over Time</h2>
                 <p className="text-sm text-gray-400 mb-4">Monthly subscription cost recorded over time.</p>
