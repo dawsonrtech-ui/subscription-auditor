@@ -32,9 +32,17 @@ function App() {
   const [budgets, setBudgets] = useState([])
   const [priceCompares, setPriceCompares] = useState([])
 
+  // Toast
+  const [toast, setToast] = useState(null)
+
   const categories = ['Streaming', 'SaaS', 'Gym', 'Insurance', 'Utilities', 'Software', 'Cloud', 'Other']
   const cycles = ['monthly', 'yearly', 'weekly']
   const tabs = ['subscriptions', 'budget', 'bank', 'gmail', 'alerts']
+
+  function showToast(msg, type = 'info') {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 4000)
+  }
 
   useEffect(() => {
     if (token) {
@@ -52,6 +60,10 @@ function App() {
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...opts.headers },
       ...opts,
     })
+    if (res.status === 401) {
+      setToken(null); localStorage.removeItem('token'); setEmail('')
+      throw new Error('Session expired. Please log in again.')
+    }
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }))
       throw new Error(err.error || 'Request failed')
@@ -62,26 +74,28 @@ function App() {
   // Auth
   async function handleRegister(e) {
     e.preventDefault(); const f = e.target
-    try { await api('/auth/register', { method: 'POST', body: JSON.stringify({ email: f.email.value, password: f.password.value }) }); f.reset(); setPage('login') }
-    catch (err) { alert(err.message) }
+    try { await api('/auth/register', { method: 'POST', body: JSON.stringify({ email: f.email.value, password: f.password.value }) }); f.reset(); setPage('login'); showToast('Account created! Sign in to continue.', 'success') }
+    catch (err) { showToast(err.message, 'error') }
   }
   async function handleLogin(e) {
     e.preventDefault(); const f = e.target
     try { const d = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email: f.email.value, password: f.password.value }) }); setToken(d.token); setEmail(d.email); setNotifyDays(d.notify_before_days ?? 3); localStorage.setItem('token', d.token) }
-    catch (err) { alert(err.message) }
+    catch (err) { showToast(err.message, 'error') }
   }
-  function logout() { setToken(null); setEmail(''); localStorage.removeItem('token'); setSubs([]); setSummary(null); setPlaidRecurring([]); setGmailDetected([]) }
+  function logout() { setToken(null); setEmail(''); localStorage.removeItem('token'); setSubs([]); setSummary(null); setPlaidRecurring([]); setGmailDetected([]); showToast('Logged out', 'info') }
 
   // Subs
   async function fetchSubs() { setSubs(await api('/subscriptions')) }
   async function fetchSummary() { setSummary(await api('/summary')) }
   async function addSub(e) {
     e.preventDefault(); const f = e.target
-    await api('/subscriptions', { method: 'POST', body: JSON.stringify({ name: f.name.value, category: f.category.value, cost: parseFloat(f.cost.value), billing_cycle: f.cycle.value, next_billing: f.next.value || null, notes: f.notes.value }) })
-    f.reset(); fetchSubs(); fetchSummary()
+    try {
+      await api('/subscriptions', { method: 'POST', body: JSON.stringify({ name: f.name.value, category: f.category.value, cost: parseFloat(f.cost.value), billing_cycle: f.cycle.value, next_billing: f.next.value || null, notes: f.notes.value }) })
+      f.reset(); fetchSubs(); fetchSummary(); showToast('Subscription added', 'success')
+    } catch (err) { showToast(err.message, 'error') }
   }
-  async function deleteSub(id) { await api('/subscriptions/' + id, { method: 'DELETE' }); fetchSubs(); fetchSummary() }
-  async function toggleStatus(sub) { await api('/subscriptions/' + sub.id, { method: 'PUT', body: JSON.stringify({ status: sub.status === 'active' ? 'cancelled' : 'active' }) }); fetchSubs(); fetchSummary() }
+  async function deleteSub(id) { try { await api('/subscriptions/' + id, { method: 'DELETE' }); fetchSubs(); fetchSummary(); showToast('Subscription deleted', 'info') } catch (err) { showToast(err.message, 'error') } }
+  async function toggleStatus(sub) { try { await api('/subscriptions/' + sub.id, { method: 'PUT', body: JSON.stringify({ status: sub.status === 'active' ? 'cancelled' : 'active' }) }); fetchSubs(); fetchSummary() } catch (err) { showToast(err.message, 'error') } }
 
   // Budget
   async function fetchBudgets() { try { setBudgets(await api('/budgets')) } catch {} }
@@ -94,30 +108,32 @@ function App() {
   async function exportCSV() {
     try {
       const res = await fetch(API + '/export/csv', { headers: { Authorization: 'Bearer ' + token } })
+      if (res.status === 401) { setToken(null); localStorage.removeItem('token'); setEmail(''); throw new Error('Session expired') }
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url; a.download = 'subscriptions.csv'; a.click()
       URL.revokeObjectURL(url)
-    } catch (err) { alert(err.message) }
+      showToast('CSV downloaded', 'success')
+    } catch (err) { showToast(err.message, 'error') }
   }
 
   // Plaid
   async function fetchPlaidStatus() { try { const c = await api('/plaid/connections'); setPlaidConnected(c.length > 0) } catch {} }
   async function syncTransactions() {
     setPlaidLoading(true)
-    try { const d = await api('/plaid/sync', { method: 'POST' }); setPlaidImportCount(d.imported); setPlaidRecurring(d.recurring || []); alert(`Imported ${d.imported} transactions.\n${d.recurring.length} recurring merchants detected.`) }
-    catch (err) { alert(err.message) }
+    try { const d = await api('/plaid/sync', { method: 'POST' }); setPlaidImportCount(d.imported); setPlaidRecurring(d.recurring || []); showToast(`Imported ${d.imported} transactions, ${d.recurring.length} recurring merchants`, 'success') }
+    catch (err) { showToast(err.message, 'error') }
     setPlaidLoading(false)
   }
-  async function convertPlaidSub(m, name, amt) { try { await api('/plaid/convert-sub', { method: 'POST', body: JSON.stringify({ merchant_name: m, name, avg_amount: amt }) }); fetchSubs(); fetchSummary(); syncTransactions() } catch (err) { alert(err.message) } }
+  async function convertPlaidSub(m, name, amt) { try { await api('/plaid/convert-sub', { method: 'POST', body: JSON.stringify({ merchant_name: m, name, avg_amount: amt }) }); fetchSubs(); fetchSummary(); syncTransactions(); showToast(`Added ${m} to subscriptions`, 'success') } catch (err) { showToast(err.message, 'error') } }
 
   // Gmail
   async function fetchGmailStatus() { try { const s = await api('/gmail/status'); setGmailConnected(s.connected) } catch {} }
-  async function connectGmail() { try { const { url } = await api('/gmail/auth-url'); window.location.href = url } catch (err) { alert(err.message) } }
+  async function connectGmail() { try { const { url } = await api('/gmail/auth-url'); window.location.href = url } catch (err) { showToast(err.message, 'error') } }
   async function scanGmail() {
     setGmailLoading(true)
-    try { const d = await api('/gmail/scan', { method: 'POST' }); alert(`Scanned ${d.scanned} emails.\n${d.new_detected} new potential subscriptions.`); fetchGmailDetected() }
-    catch (err) { alert(err.message) }
+    try { const d = await api('/gmail/scan', { method: 'POST' }); showToast(`Scanned ${d.scanned} emails, ${d.new_detected} new subscriptions found`, 'success'); fetchGmailDetected() }
+    catch (err) { showToast(err.message, 'error') }
     setGmailLoading(false)
   }
   async function fetchGmailDetected() { try { setGmailDetected(await api('/gmail/detected')) } catch {} }
@@ -128,11 +144,11 @@ function App() {
   // Notifications
   async function fetchNotifySettings() { try { const s = await api('/notify/settings'); setNotifyDays(s.notify_before_days ?? 3) } catch {} }
   async function updateNotifyDays(days) { await api('/notify/settings', { method: 'PUT', body: JSON.stringify({ notify_before_days: days }) }); setNotifyDays(days) }
-  async function previewNotify() { try { setNotifyPreview(await api('/notify/preview')) } catch (err) { alert(err.message) } }
+  async function previewNotify() { try { setNotifyPreview(await api('/notify/preview')) } catch (err) { showToast(err.message, 'error') } }
   async function sendNotify() {
     setNotifySending(true)
-    try { const r = await api('/notify/send', { method: 'POST' }); alert(r.sent ? `Sent to ${email}` : 'No upcoming renewals') }
-    catch (err) { alert(err.message) }
+    try { const r = await api('/notify/send', { method: 'POST' }); showToast(r.sent ? `Sent to ${email}` : 'No upcoming renewals', r.sent ? 'success' : 'info') }
+    catch (err) { showToast(err.message, 'error') }
     setNotifySending(false)
   }
 
@@ -170,6 +186,11 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
+      {toast && (
+        <div className={`fixed top-4 right-4 z-50 px-5 py-3 rounded-lg shadow-xl text-sm font-medium transition-all animate-slide-in ${toast.type === 'error' ? 'bg-red-600 text-white' : toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-100'}`}>
+          {toast.msg}
+        </div>
+      )}
       <header className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between">
         <h1 className="text-xl font-bold">Subscription Auditor</h1>
         <div className="flex items-center gap-4">
@@ -359,7 +380,7 @@ function App() {
                 <span className={plaidConnected ? 'text-green-400' : 'text-gray-400'}>{plaidConnected ? 'Bank connected' : 'No bank connected'}</span>
               </div>
               <div className="flex gap-3 mt-4">
-                <PlaidLinkButton api={api} setPlaidConnected={setPlaidConnected} plaidConnected={plaidConnected} />
+                <PlaidLinkButton api={api} setPlaidConnected={setPlaidConnected} plaidConnected={plaidConnected} showToast={showToast} />
                 {plaidConnected && (
                   <button onClick={syncTransactions} disabled={plaidLoading} className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-50 font-medium cursor-pointer">
                     {plaidLoading ? 'Syncing...' : 'Sync Transactions'}
@@ -501,7 +522,7 @@ function App() {
   )
 }
 
-function PlaidLinkButton({ api, plaidConnected, setPlaidConnected }) {
+function PlaidLinkButton({ api, plaidConnected, setPlaidConnected, showToast }) {
   const [linkToken, setLinkToken] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -509,9 +530,9 @@ function PlaidLinkButton({ api, plaidConnected, setPlaidConnected }) {
     try {
       await api('/plaid/exchange-token', { method: 'POST', body: JSON.stringify({ public_token: publicToken, institution_name: metadata?.institution?.name || '' }) })
       setPlaidConnected(true)
-      alert('Bank connected! Sync transactions to find subscriptions.')
-    } catch (err) { alert(err.message) }
-  }, [api, setPlaidConnected])
+      showToast('Bank connected! Sync transactions to find subscriptions.', 'success')
+    } catch (err) { showToast(err.message, 'error') }
+  }, [api, setPlaidConnected, showToast])
 
   const { open, ready } = usePlaidLink({ token: linkToken, onSuccess, onExit: () => { setLinkToken(null); setLoading(false) } })
 
@@ -519,7 +540,7 @@ function PlaidLinkButton({ api, plaidConnected, setPlaidConnected }) {
     if (!plaidConnected) {
       setLoading(true)
       try { const { link_token } = await api('/plaid/create-link-token', { method: 'POST' }); setLinkToken(link_token) }
-      catch (err) { alert(err.message); setLoading(false); return }
+      catch (err) { showToast(err.message, 'error'); setLoading(false); return }
     }
     if (linkToken && ready) open()
   }

@@ -362,10 +362,10 @@ app.post('/api/gmail/scan', authenticate, async (req, res) => {
       saveDb(); oauth2.setCredentials(credentials);
     }
     const gmail = google.gmail({ version: 'v1', auth: oauth2 });
-    const listRes = await gmail.users.messages.list({ userId: 'me', q: `after:${new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]}`, maxResults: 50 });
+    const listRes = await gmail.users.messages.list({ userId: 'me', q: `after:${new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]}`, maxResults: 20 });
     const messages = listRes.data.messages || [];
     const detected = [];
-    for (const msg of messages.slice(0, 20)) {
+    for (const msg of messages) {
       const detail = await gmail.users.messages.get({ userId: 'me', id: msg.id, format: 'metadata', metadataHeaders: ['Subject', 'From', 'Date'] });
       const h = detail.data.payload.headers;
       const subject = h.find(x => x.name === 'Subject')?.value || '';
