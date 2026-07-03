@@ -105,6 +105,10 @@ function App() {
   const [projection, setProjection] = useState(null)
   async function fetchProjection() { try { setProjection(await api('/projection')) } catch {} }
 
+  // Cost History
+  const [costHistory, setCostHistory] = useState([])
+  async function fetchCostHistory() { try { setCostHistory(await api('/cost-history')) } catch {} }
+
   // Price compare
   async function fetchPriceCompares() { try { setPriceCompares(await api('/price-compare')) } catch {} }
 
@@ -206,7 +210,7 @@ function App() {
 
       <div className="border-b border-gray-700 px-6 flex gap-6 text-sm overflow-x-auto">
         {tabs.map(t => (
-          <button key={t} onClick={() => { setActiveTab(t); if (t === 'budget' || t === 'dashboard') fetchPriceCompares(); if (t === 'dashboard') { fetchSummary(); fetchProjection() } }}
+          <button key={t} onClick={() => { setActiveTab(t); if (t === 'budget' || t === 'dashboard') fetchPriceCompares(); if (t === 'dashboard') { fetchSummary(); fetchProjection(); fetchCostHistory() } }}
             className={`pb-3 pt-3 border-b-2 font-medium capitalize whitespace-nowrap cursor-pointer transition-colors ${activeTab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
             {t === 'dashboard' ? '📊 Dash' : t === 'bank' ? '🏦 Bank' : t === 'gmail' ? '📧 Gmail' : t === 'alerts' ? '🔔 Alerts' : t === 'budget' ? '💰 Budget' : '📋 Subs'}
           </button>
@@ -354,6 +358,42 @@ function App() {
                   )}
                 </div>
               </>
+            )}
+
+            {/* Cost History */}
+            {costHistory.length > 1 && (
+              <div className="bg-gray-800 rounded-xl p-6">
+                <h2 className="text-lg font-semibold mb-3">Cost Over Time</h2>
+                <p className="text-sm text-gray-400 mb-4">Monthly subscription cost recorded over time.</p>
+                <div className="space-y-2">
+                  {costHistory.map((h, i) => {
+                    const vals = costHistory.map(x => Number(x.monthly_cost))
+                    const max = Math.max(...vals, 1)
+                    const pct = Math.max(3, (Number(h.monthly_cost) / max) * 100)
+                    const prev = i > 0 ? Number(costHistory[i - 1].monthly_cost) : Number(h.monthly_cost)
+                    const diff = Number(h.monthly_cost) - prev
+                    return (
+                      <div key={i}>
+                        <div className="flex justify-between text-sm mb-1">
+                          <span className="text-gray-400">{h.date}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono">${Number(h.monthly_cost).toFixed(2)}</span>
+                            {diff !== 0 && (
+                              <span className={`text-xs font-mono ${diff > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                {diff > 0 ? '+' : ''}{diff.toFixed(2)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="bg-gray-700 rounded-full h-5 relative overflow-hidden">
+                          <div className={`h-full rounded-full ${h.date === costHistory[costHistory.length - 1].date ? 'bg-blue-500' : diff > 0 ? 'bg-red-500/60' : diff < 0 ? 'bg-green-500/60' : 'bg-gray-500/60'}`}
+                            style={{ width: pct + '%' }}></div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
             )}
 
             {/* Top 5 Most Expensive */}

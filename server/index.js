@@ -70,6 +70,11 @@ async function initDb() {
       amount NUMERIC, billing_cycle TEXT DEFAULT 'monthly', email_subject TEXT, email_date TEXT,
       status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (NOW())
     );
+    CREATE TABLE IF NOT EXISTS cost_snapshots (
+      id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
+      monthly_cost NUMERIC NOT NULL, date TEXT NOT NULL,
+      UNIQUE(user_id, date)
+    );
   `);
 }
 
@@ -156,6 +161,24 @@ app.get('/api/summary', authenticate, async (req, res) => {
     count: subs.length, upcoming, annual, budgetVsActual, byCategory,
     cancelledCount: cancelled.length, cancelledMonthly: Math.round(cancelledMonthly * 100) / 100, cancelled: cancelled
   });
+});
+
+// ── Cost History / Spending Analytics ──
+app.get('/api/cost-history', authenticate, async (req, res) => {
+  const today = new Date().toISOString().split('T')[0];
+  const monthly = await queryOne(
+    "SELECT ROUND(SUM(CASE WHEN billing_cycle='monthly' THEN cost WHEN billing_cycle='yearly' THEN cost/12 WHEN billing_cycle='weekly' THEN cost*4.33 ELSE cost END)::numeric,2) AS m FROM subscriptions WHERE user_id=$1 AND status='active'",
+    [req.user.id]
+  );
+  if (monthly?.m != null) {
+    await q('INSERT INTO cost_snapshots (user_id, monthly_cost, date) VALUES ($1,$2,$3) ON CONFLICT (user_id,date) DO UPDATE SET monthly_cost=EXCLUDED.monthly_cost',
+      [req.user.id, monthly.m, today]).catch(() => {});
+  }
+  const history = await queryAll(
+    'SELECT monthly_cost, date FROM cost_snapshots WHERE user_id=$1 ORDER BY date ASC LIMIT 180',
+    [req.user.id]
+  );
+  res.json(history);
 });
 
 // ── Projection / Spending Trends ──
