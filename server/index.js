@@ -6,8 +6,15 @@ import pkg from 'pg';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-const { Pool } = pkg;
+const { Pool, types } = pkg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// pg returns NUMERIC/DECIMAL columns (cost, monthly_budget, monthly_cost, ...)
+// as strings by default, to avoid silent precision loss on values too large
+// for a JS float. Our amounts are always small currency values, so we opt
+// into parsing them as numbers here — this is the single place to do it,
+// rather than every caller having to remember to wrap values in Number().
+types.setTypeParser(1700 /* NUMERIC */, val => (val === null ? null : parseFloat(val)));
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/subaudit';
 const pool = new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : false });
