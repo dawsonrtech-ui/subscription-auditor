@@ -5,7 +5,10 @@ on:
   pull_request:
 
 jobs:
-  test:
+  # Fast, self-contained suite: mocked Plaid/Gmail test doubles + real Postgres.
+  # No live server process is started — supertest talks to the Express app
+  # in-process. This is the primary `npm test` and should stay quick.
+  unit-tests:
     runs-on: ubuntu-latest
 
     services:
@@ -44,11 +47,48 @@ jobs:
         working-directory: server
         run: npm test
 
-      - name: Start server for legacy end-to-end suite
-        working-directory: server
+  # Slower, full-stack smoke test: boots the real server and drives it with
+  # the pre-existing live HTTP suite (server/test-api.mjs). Runs in its own
+  # job/Postgres so a slow or flaky boot here never blocks the fast suite
+  # above from reporting results.
+  legacy-e2e:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/subaudit_test
-          PORT: 3001
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: subaudit_legacy
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/subaudit_legacy
+      JWT_SECRET: ci-test-secret
+      PORT: 3001
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Start server
+        working-directory: server
         run: |
           node index.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
@@ -61,7 +101,7 @@ jobs:
 
       - name: Run legacy end-to-end suite
         working-directory: server
-        run: node test-api.mjs
+        run: npm run test:legacy
 
       - name: Stop server
         if: always()
@@ -71,5 +111,5 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: server-log
+          name: legacy-server-log
           path: /tmp/server.log
