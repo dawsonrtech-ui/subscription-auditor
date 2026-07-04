@@ -519,5 +519,11 @@ app.get('*', (req, res) => {
   res.sendFile(join(__dirname, '..', 'client', 'dist', 'index.html'));
 });
 
-await initDb();
-app.listen(PORT, () => console.log(`Server running on ${BASE_URL}`));
+// Exported so tests can mount `app` with supertest (and call `initDb`)
+// without also binding a port or requiring live Plaid/Gmail credentials.
+export { app, initDb };
+
+if (process.env.NODE_ENV !== 'test') {
+  await initDb();
+  app.listen(PORT, () => console.log(`Server running on ${BASE_URL}`));
+}

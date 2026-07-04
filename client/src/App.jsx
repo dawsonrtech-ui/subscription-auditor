@@ -12,6 +12,10 @@ function App() {
   const [summary, setSummary] = useState(null)
   const [activeTab, setActiveTab] = useState('subscriptions')
 
+  // Subscriptions list search/sort
+  const [subSearch, setSubSearch] = useState('')
+  const [subSort, setSubSort] = useState('next_billing')
+
   // Plaid
   const [plaidConnected, setPlaidConnected] = useState(false)
   const [plaidRecurring, setPlaidRecurring] = useState([])
@@ -38,6 +42,29 @@ function App() {
   const categories = ['Streaming', 'SaaS', 'Gym', 'Insurance', 'Utilities', 'Software', 'Cloud', 'Other']
   const cycles = ['monthly', 'yearly', 'weekly']
   const tabs = ['dashboard', 'subscriptions', 'budget', 'bank', 'gmail', 'alerts']
+
+  const visibleSubs = subs
+    .filter(sub => {
+      const q = subSearch.trim().toLowerCase()
+      if (!q) return true
+      return sub.name.toLowerCase().includes(q) ||
+        sub.category.toLowerCase().includes(q) ||
+        (sub.notes || '').toLowerCase().includes(q)
+    })
+    .sort((a, b) => {
+      switch (subSort) {
+        case 'name': return a.name.localeCompare(b.name)
+        case 'cost_desc': return Number(b.cost) - Number(a.cost)
+        case 'cost_asc': return Number(a.cost) - Number(b.cost)
+        case 'category': return a.category.localeCompare(b.category)
+        case 'next_billing':
+        default:
+          if (!a.next_billing && !b.next_billing) return 0
+          if (!a.next_billing) return 1
+          if (!b.next_billing) return -1
+          return a.next_billing.localeCompare(b.next_billing)
+      }
+    })
 
   function showToast(msg, type = 'info') {
     setToast({ msg, type })
@@ -296,7 +323,7 @@ function App() {
                   {summary.upcoming.map(s => (
                     <div key={s.id} className="flex justify-between p-3 bg-gray-700/40 rounded-lg">
                       <span className="font-medium">{s.name}</span>
-                      <span className="font-mono">${s.cost.toFixed(2)} — {s.next_billing}</span>
+                      <span className="font-mono">${Number(s.cost).toFixed(2)} — {s.next_billing}</span>
                     </div>
                   ))}
                 </div>
@@ -538,15 +565,39 @@ function App() {
             )}
 
             <div className="bg-gray-800 rounded-xl p-6">
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
                 <h2 className="text-lg font-semibold">All Subscriptions</h2>
-                <span className="text-sm text-gray-400">{subs.length} total</span>
+                <span className="text-sm text-gray-400">{visibleSubs.length} of {subs.length}</span>
               </div>
+              {subs.length > 0 && (
+                <div className="flex items-center gap-3 mb-4 flex-wrap">
+                  <input
+                    type="text"
+                    value={subSearch}
+                    onChange={e => setSubSearch(e.target.value)}
+                    placeholder="Search by name, category, or notes..."
+                    className="flex-1 min-w-[200px] p-2 rounded-lg bg-gray-700 border border-gray-600 focus:border-blue-500 outline-none text-sm"
+                  />
+                  <select
+                    value={subSort}
+                    onChange={e => setSubSort(e.target.value)}
+                    className="p-2 rounded-lg bg-gray-700 border border-gray-600 focus:border-blue-500 outline-none text-sm"
+                  >
+                    <option value="next_billing">Sort: Next billing</option>
+                    <option value="name">Sort: Name (A–Z)</option>
+                    <option value="cost_desc">Sort: Cost (high–low)</option>
+                    <option value="cost_asc">Sort: Cost (low–high)</option>
+                    <option value="category">Sort: Category</option>
+                  </select>
+                </div>
+              )}
               {subs.length === 0 ? (
                 <p className="text-gray-500 text-center py-8">No subscriptions yet.</p>
+              ) : visibleSubs.length === 0 ? (
+                <p className="text-gray-500 text-center py-8">No subscriptions match "{subSearch}".</p>
               ) : (
                 <div className="space-y-2">
-                  {subs.map(sub => (
+                  {visibleSubs.map(sub => (
                     <div key={sub.id} className={`flex items-center justify-between p-3 rounded-lg ${sub.status === 'active' ? 'bg-gray-700/50' : 'bg-gray-700/20 opacity-60'}`}>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -562,7 +613,7 @@ function App() {
                       </div>
                       <div className="flex items-center gap-3 flex-shrink-0 ml-3">
                         <div className="text-right">
-                          <p className="font-mono">${sub.cost.toFixed(2)}</p>
+                          <p className="font-mono">${Number(sub.cost).toFixed(2)}</p>
                           <p className="text-xs text-gray-400">{sub.billing_cycle}</p>
                         </div>
                         <button onClick={() => toggleStatus(sub)} className={`text-xs px-3 py-1 rounded cursor-pointer ${sub.status === 'active' ? 'bg-red-600/20 text-red-400 hover:bg-red-600/40' : 'bg-green-600/20 text-green-400 hover:bg-green-600/40'}`}>
@@ -772,7 +823,7 @@ function App() {
                         <ul className="space-y-1">{notifyPreview.upcoming.map(s => (
                           <li key={s.id} className="text-sm flex justify-between">
                             <span>{s.name}</span>
-                            <span className="font-mono">${s.cost.toFixed(2)} — {s.next_billing}</span>
+                            <span className="font-mono">${Number(s.cost).toFixed(2)} — {s.next_billing}</span>
                           </li>
                         ))}</ul>
                       )}
@@ -785,7 +836,7 @@ function App() {
                         <ul className="space-y-1">{notifyPreview.annual.map(s => (
                           <li key={s.id} className="text-sm flex justify-between">
                             <span>{s.name}</span>
-                            <span className="font-mono text-purple-400">${s.cost.toFixed(2)}/yr</span>
+                            <span className="font-mono text-purple-400">${Number(s.cost).toFixed(2)}/yr</span>
                           </li>
                         ))}</ul>
                       )}
