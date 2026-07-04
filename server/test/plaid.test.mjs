@@ -160,4 +160,74 @@ describe('Plaid integration (sandbox responses mocked)', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/no bank/i);
   });
+
+  it('returns a 500 with the Plaid error message when link token creation fails', async () => {
+    mockLinkTokenCreate.mockRejectedValueOnce(new Error('INVALID_API_KEYS'));
+
+    const res = await request(app)
+      .post('/api/plaid/create-link-token')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('INVALID_API_KEYS');
+  });
+
+  describe('pagination and partial failures', () => {
+    let pagedToken;
+    let pagedEmail;
+
+    beforeAll(async () => {
+      pagedEmail = `plaid-paged-${runId}@test.com`;
+      await request(app).post('/api/auth/register').send({ email: pagedEmail, password: 'test123' });
+      const login = await request(app).post('/api/auth/login').send({ email: pagedEmail, password: 'test123' });
+      pagedToken = login.body.token;
+
+      mockItemPublicTokenExchange.mockResolvedValueOnce({
+        data: { access_token: 'access-sandbox-paged', item_id: 'item-sandbox-paged' },
+      });
+      await request(app)
+        .post('/api/plaid/exchange-token')
+        .set('Authorization', `Bearer ${pagedToken}`)
+        .send({ public_token: 'public-sandbox-paged', institution_name: 'Paged Bank' });
+    });
+
+    it('walks multiple transactionsSync pages until has_more is false', async () => {
+      mockTransactionsSync.mockClear();
+      mockTransactionsSync
+        .mockResolvedValueOnce({
+          data: {
+            added: [{ transaction_id: `tx-${runId}-page1`, name: 'Hulu', amount: 7.99, date: '2026-05-01', category: ['Entertainment'], merchant_name: 'Hulu', pending: false }],
+            next_cursor: 'cursor-page-a',
+            has_more: true,
+          },
+        })
+        .mockResolvedValueOnce({
+          data: {
+            added: [{ transaction_id: `tx-${runId}-page2`, name: 'Hulu', amount: 7.99, date: '2026-06-01', category: ['Entertainment'], merchant_name: 'Hulu', pending: false }],
+            next_cursor: 'cursor-page-b',
+            has_more: false,
+          },
+        });
+
+      const res = await request(app).post('/api/plaid/sync').set('Authorization', `Bearer ${pagedToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.imported).toBe(2);
+      expect(mockTransactionsSync).toHaveBeenCalledTimes(2);
+      // Second call should resume from the cursor returned by the first page.
+      expect(mockTransactionsSync.mock.calls[mockTransactionsSync.mock.calls.length - 1][0]).toMatchObject({ cursor: 'cursor-page-a' });
+    });
+
+    it('does not fail the whole request when Plaid returns an item error (e.g. ITEM_LOGIN_REQUIRED)', async () => {
+      mockTransactionsSync.mockRejectedValueOnce(new Error('ITEM_LOGIN_REQUIRED'));
+
+      const res = await request(app).post('/api/plaid/sync').set('Authorization', `Bearer ${pagedToken}`);
+
+      // The route logs and swallows per-connection Plaid errors so one broken
+      // bank connection doesn't take down the whole sync response.
+      expect(res.status).toBe(200);
+      expect(res.body.imported).toBe(0);
+      expect(res.body.total).toBeGreaterThanOrEqual(2);
+    });
+  });
 });

@@ -203,6 +203,70 @@ describe('Gmail integration (OAuth + API responses mocked)', () => {
     expect(updated.status).toBe('dismissed');
   });
 
+  describe('token refresh and edge cases', () => {
+    let edgeToken;
+    let edgeUserId;
+    const edgeEmail = `gmail-edge-${Date.now()}-${Math.random().toString(36).slice(2)}@test.com`;
+
+    beforeAll(async () => {
+      await request(app).post('/api/auth/register').send({ email: edgeEmail, password: 'test123' });
+      const login = await request(app).post('/api/auth/login').send({ email: edgeEmail, password: 'test123' });
+      edgeToken = login.body.token;
+      edgeUserId = JSON.parse(Buffer.from(edgeToken.split('.')[1], 'base64').toString()).id;
+
+      // Connect with a token that is already expired, so the next /scan call
+      // is forced down the refresh path.
+      mockGetToken.mockResolvedValueOnce({
+        tokens: {
+          access_token: 'ya29.mock-expired-access-token',
+          refresh_token: '1//mock-refresh-token-edge',
+          scope: 'https://www.googleapis.com/auth/gmail.readonly',
+          expiry_date: Date.now() - 60_000,
+        },
+      });
+      await request(app).get('/api/gmail/callback').query({ code: 'mock-auth-code-edge', state: String(edgeUserId) });
+    });
+
+    it('refreshes an expired access token before scanning', async () => {
+      mockRefreshAccessToken.mockResolvedValueOnce({
+        credentials: {
+          access_token: 'ya29.mock-refreshed-access-token',
+          refresh_token: '1//mock-refresh-token-edge',
+          expiry_date: Date.now() + 3600 * 1000,
+        },
+      });
+      mockMessagesList.mockResolvedValueOnce({ data: { messages: [] } });
+
+      const res = await request(app).post('/api/gmail/scan').set('Authorization', `Bearer ${edgeToken}`);
+
+      expect(res.status).toBe(200);
+      expect(mockRefreshAccessToken).toHaveBeenCalledTimes(1);
+      expect(res.body.scanned).toBe(0);
+    });
+
+    it('falls back to the subject line when no subscription keyword is present', async () => {
+      mockMessagesList.mockResolvedValueOnce({ data: { messages: [{ id: 'msg-edge-1' }] } });
+      mockMessagesGet.mockResolvedValueOnce({
+        data: {
+          payload: {
+            headers: [
+              { name: 'Subject', value: 'Team Standup Notes' },
+              { name: 'From', value: 'Team Bot <team@company.com>' },
+              { name: 'Date', value: 'Wed, 3 Jun 2026 09:00:00 -0400' },
+            ],
+          },
+        },
+      });
+
+      const res = await request(app).post('/api/gmail/scan').set('Authorization', `Bearer ${edgeToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.new_detected).toBe(1);
+      expect(res.body.detected[0].serviceName).toBe('Team Standup Notes');
+      expect(res.body.detected[0].amount).toBeNull();
+    });
+  });
+
   it('disconnects Gmail', async () => {
     const res = await request(app).delete('/api/gmail/disconnect').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
