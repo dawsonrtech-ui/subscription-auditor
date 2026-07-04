@@ -25,7 +25,15 @@ npm run dev                           # runs client + server concurrently
 
 ## Testing
 
-The server has two complementary test suites:
+The **client** has a small, fast Vitest suite for pure logic extracted out
+of `App.jsx` (e.g. the subscriptions search/sort helper in
+`client/src/subscriptionUtils.js`):
+
+```bash
+cd client && npm test
+```
+
+The **server** has two complementary suites:
 
 - **`npm test`** — fast, self-contained tests (`server/test/*.test.mjs`, run
   via [Vitest](https://vitest.dev)) that exercise the real Express routes
@@ -47,11 +55,13 @@ cd server
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/subaudit_test npm test
 ```
 
-CI (`.github/workflows/ci.yml`) runs both suites on every push/PR, each
-against its own ephemeral `postgres:16` service container:
+CI (`.github/workflows/ci.yml`) runs all three on every push/PR:
 
-- `unit-tests` — the mocked Vitest suite (`npm test`)
-- `legacy-e2e` — boots the server and runs `npm run test:legacy` against it
+- `client-tests` — the client Vitest suite (no backend needed)
+- `unit-tests` — the mocked server Vitest suite (`npm test`), against its
+  own ephemeral `postgres:16` service container
+- `legacy-e2e` — boots the server and runs `npm run test:legacy` against it,
+  against its own ephemeral `postgres:16` service container
 
 ## Deployment
 

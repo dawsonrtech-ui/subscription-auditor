@@ -5,6 +5,27 @@ on:
   pull_request:
 
 jobs:
+  # Client-side unit tests (pure logic extracted from App.jsx, e.g. the
+  # subscriptions search/sort helper). No browser/DOM or backend needed.
+  client-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Run client unit tests
+        working-directory: client
+        run: npm test
+
   # Fast, self-contained suite: mocked Plaid/Gmail test doubles + real Postgres.
   # No live server process is started — supertest talks to the Express app
   # in-process. This is the primary `npm test` and should stay quick.

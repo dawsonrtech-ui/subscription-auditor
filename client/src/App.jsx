@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { usePlaidLink } from 'react-plaid-link'
+import { filterAndSortSubscriptions } from './subscriptionUtils'
 import './index.css'
 
 const API = '/api'
@@ -43,28 +44,7 @@ function App() {
   const cycles = ['monthly', 'yearly', 'weekly']
   const tabs = ['dashboard', 'subscriptions', 'budget', 'bank', 'gmail', 'alerts']
 
-  const visibleSubs = subs
-    .filter(sub => {
-      const q = subSearch.trim().toLowerCase()
-      if (!q) return true
-      return sub.name.toLowerCase().includes(q) ||
-        sub.category.toLowerCase().includes(q) ||
-        (sub.notes || '').toLowerCase().includes(q)
-    })
-    .sort((a, b) => {
-      switch (subSort) {
-        case 'name': return a.name.localeCompare(b.name)
-        case 'cost_desc': return Number(b.cost) - Number(a.cost)
-        case 'cost_asc': return Number(a.cost) - Number(b.cost)
-        case 'category': return a.category.localeCompare(b.category)
-        case 'next_billing':
-        default:
-          if (!a.next_billing && !b.next_billing) return 0
-          if (!a.next_billing) return 1
-          if (!b.next_billing) return -1
-          return a.next_billing.localeCompare(b.next_billing)
-      }
-    })
+  const visibleSubs = filterAndSortSubscriptions(subs, { search: subSearch, sort: subSort })
 
   function showToast(msg, type = 'info') {
     setToast({ msg, type })
