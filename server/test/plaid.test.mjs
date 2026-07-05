@@ -172,6 +172,108 @@ describe('Plaid integration (sandbox responses mocked)', () => {
     expect(res.body.error).toBe('INVALID_API_KEYS');
   });
 
+  describe('webhooks and update mode (re-auth)', () => {
+    let reauthToken;
+    let reauthItemId;
+
+    beforeAll(async () => {
+      const reauthEmail = `plaid-reauth-${runId}@test.com`;
+      await request(app).post('/api/auth/register').send({ email: reauthEmail, password: 'test123' });
+      const login = await request(app).post('/api/auth/login').send({ email: reauthEmail, password: 'test123' });
+      reauthToken = login.body.token;
+      reauthItemId = `item-sandbox-reauth-${runId}`;
+
+      mockItemPublicTokenExchange.mockResolvedValueOnce({
+        data: { access_token: 'access-sandbox-reauth', item_id: reauthItemId },
+      });
+      await request(app)
+        .post('/api/plaid/exchange-token')
+        .set('Authorization', `Bearer ${reauthToken}`)
+        .send({ public_token: 'public-sandbox-reauth', institution_name: 'Reauth Bank' });
+    });
+
+    it('is not flagged for reauth right after connecting', async () => {
+      const connections = await request(app).get('/api/plaid/connections').set('Authorization', `Bearer ${reauthToken}`);
+      const conn = connections.body.find(c => c.item_id === reauthItemId);
+      expect(conn.needs_reauth).toBe(false);
+    });
+
+    it('flags a connection needing reauth when Plaid sends an ITEM_LOGIN_REQUIRED webhook', async () => {
+      const res = await request(app).post('/api/plaid/webhook').send({
+        webhook_type: 'ITEM',
+        webhook_code: 'ERROR',
+        item_id: reauthItemId,
+        error: { error_code: 'ITEM_LOGIN_REQUIRED', error_message: 'the login details of this item have changed' },
+      });
+      expect(res.status).toBe(200);
+
+      const connections = await request(app).get('/api/plaid/connections').set('Authorization', `Bearer ${reauthToken}`);
+      const conn = connections.body.find(c => c.item_id === reauthItemId);
+      expect(conn.needs_reauth).toBe(true);
+    });
+
+    it('ignores ITEM ERROR webhooks for unrelated error codes', async () => {
+      const res = await request(app).post('/api/plaid/webhook').send({
+        webhook_type: 'ITEM',
+        webhook_code: 'ERROR',
+        item_id: reauthItemId,
+        error: { error_code: 'RATE_LIMIT_EXCEEDED' },
+      });
+      expect(res.status).toBe(200);
+      // Already true from the previous test; a non-login error shouldn't
+      // have changed it (it also shouldn't clear a flag it didn't set).
+      const connections = await request(app).get('/api/plaid/connections').set('Authorization', `Bearer ${reauthToken}`);
+      expect(connections.body.find(c => c.item_id === reauthItemId).needs_reauth).toBe(true);
+    });
+
+    it('creates an update-mode link token scoped to the flagged item', async () => {
+      mockLinkTokenCreate.mockResolvedValueOnce({ data: { link_token: 'link-sandbox-update-mode' } });
+
+      const res = await request(app)
+        .post('/api/plaid/create-link-token')
+        .set('Authorization', `Bearer ${reauthToken}`)
+        .send({ item_id: reauthItemId });
+
+      expect(res.status).toBe(200);
+      expect(res.body.link_token).toBe('link-sandbox-update-mode');
+      expect(mockLinkTokenCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ access_token: 'access-sandbox-reauth', products: undefined })
+      );
+    });
+
+    it('rejects an update-mode request for an item_id that does not belong to the user', async () => {
+      const res = await request(app)
+        .post('/api/plaid/create-link-token')
+        .set('Authorization', `Bearer ${token}`) // the main test user, not reauthToken's owner
+        .send({ item_id: reauthItemId });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('clears needs_reauth after re-exchanging a token for the same item (simulating a completed update-mode Link flow)', async () => {
+      mockItemPublicTokenExchange.mockResolvedValueOnce({
+        data: { access_token: 'access-sandbox-reauth', item_id: reauthItemId },
+      });
+      await request(app)
+        .post('/api/plaid/exchange-token')
+        .set('Authorization', `Bearer ${reauthToken}`)
+        .send({ public_token: 'public-sandbox-reauth-2', institution_name: 'Reauth Bank' });
+
+      const connections = await request(app).get('/api/plaid/connections').set('Authorization', `Bearer ${reauthToken}`);
+      expect(connections.body.find(c => c.item_id === reauthItemId).needs_reauth).toBe(false);
+    });
+
+    it('flags needs_reauth as a fallback when a sync call itself hits ITEM_LOGIN_REQUIRED', async () => {
+      const err = new Error('ITEM_LOGIN_REQUIRED');
+      mockTransactionsSync.mockRejectedValueOnce(err);
+
+      await request(app).post('/api/plaid/sync').set('Authorization', `Bearer ${reauthToken}`);
+
+      const connections = await request(app).get('/api/plaid/connections').set('Authorization', `Bearer ${reauthToken}`);
+      expect(connections.body.find(c => c.item_id === reauthItemId).needs_reauth).toBe(true);
+    });
+  });
+
   describe('pagination and partial failures', () => {
     let pagedToken;
     let pagedEmail;

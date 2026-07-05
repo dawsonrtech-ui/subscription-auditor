@@ -31,9 +31,54 @@ export function PlaidLinkButton({ api, plaidConnected, setPlaidConnected, showTo
   )
 }
 
-export default function BankTab({ api, showToast, plaidConnected, setPlaidConnected, plaidRecurring, plaidImportCount, plaidLoading, onSync, onConvert }) {
+export function PlaidReconnectButton({ api, itemId, institutionName, onReconnected, showToast }) {
+  const [linkToken, setLinkToken] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  const onSuccess = useCallback(async (publicToken) => {
+    try {
+      // Re-auth via Link's update mode returns a new public_token for the
+      // *same* item; exchanging it clears needs_reauth server-side.
+      await api('/plaid/exchange-token', { method: 'POST', body: JSON.stringify({ public_token: publicToken, institution_name: institutionName || '' }) })
+      showToast(`Reconnected ${institutionName || 'bank'}.`, 'success')
+      onReconnected?.()
+    } catch (err) { showToast(err.message, 'error') }
+  }, [api, institutionName, onReconnected, showToast])
+
+  const { open, ready } = usePlaidLink({ token: linkToken, onSuccess, onExit: () => { setLinkToken(null); setLoading(false) } })
+
+  async function handleClick() {
+    setLoading(true)
+    try { const { link_token } = await api('/plaid/create-link-token', { method: 'POST', body: JSON.stringify({ item_id: itemId }) }); setLinkToken(link_token) }
+    catch (err) { showToast(err.message, 'error'); setLoading(false) }
+  }
+
+  useEffect(() => { if (linkToken && ready) { open(); setLoading(false) } }, [linkToken, ready, open])
+
+  return (
+    <button onClick={handleClick} disabled={loading || (linkToken && !ready)}
+      className="px-3 py-1.5 rounded-lg bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-sm font-medium cursor-pointer">
+      {loading ? 'Loading...' : 'Reconnect'}
+    </button>
+  )
+}
+
+export default function BankTab({ api, showToast, plaidConnected, setPlaidConnected, plaidConnections, onReconnected, plaidRecurring, plaidImportCount, plaidLoading, onSync, onConvert }) {
+  const needsReauth = (plaidConnections || []).filter(c => c.needs_reauth)
+
   return (
     <div className="space-y-6">
+      {needsReauth.length > 0 && (
+        <div className="bg-yellow-900/20 border border-yellow-900/40 rounded-xl p-4 space-y-2">
+          <p className="text-sm text-yellow-400 font-medium">⚠ One or more bank connections need attention</p>
+          {needsReauth.map(c => (
+            <div key={c.id} className="flex items-center justify-between text-sm">
+              <span>{c.institution_name || 'Connected bank'} — login needs to be refreshed</span>
+              <PlaidReconnectButton api={api} itemId={c.item_id} institutionName={c.institution_name} onReconnected={onReconnected} showToast={showToast} />
+            </div>
+          ))}
+        </div>
+      )}
       <div className="bg-gray-800 rounded-xl p-6">
         <h2 className="text-lg font-semibold mb-2">Bank Connection</h2>
         <p className="text-sm text-gray-400 mb-4">Connect your bank to auto-detect recurring payments.</p>

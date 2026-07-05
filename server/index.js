@@ -61,8 +61,24 @@ async function initDb() {
     );
     CREATE TABLE IF NOT EXISTS plaid_tokens (
       id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), access_token TEXT NOT NULL,
-      item_id TEXT NOT NULL, institution_name TEXT DEFAULT '', sync_cursor TEXT DEFAULT '', created_at TEXT DEFAULT (NOW())
+      item_id TEXT NOT NULL, institution_name TEXT DEFAULT '', sync_cursor TEXT DEFAULT '', created_at TEXT DEFAULT (NOW()),
+      needs_reauth BOOLEAN NOT NULL DEFAULT FALSE,
+      UNIQUE(user_id, item_id)
     );
+    ALTER TABLE plaid_tokens ADD COLUMN IF NOT EXISTS needs_reauth BOOLEAN NOT NULL DEFAULT FALSE;
+    -- Backfill-safe: only add the uniqueness guarantee if no duplicates
+    -- already exist (they shouldn't, pre-launch, but this keeps startup
+    -- from crashing if this migration ever runs against messier data).
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'plaid_tokens_user_id_item_id_key'
+      ) AND NOT EXISTS (
+        SELECT user_id, item_id FROM plaid_tokens GROUP BY user_id, item_id HAVING COUNT(*) > 1
+      ) THEN
+        ALTER TABLE plaid_tokens ADD CONSTRAINT plaid_tokens_user_id_item_id_key UNIQUE (user_id, item_id);
+      END IF;
+    END $$;
     CREATE TABLE IF NOT EXISTS plaid_transactions (
       id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), plaid_transaction_id TEXT,
       name TEXT NOT NULL, amount NUMERIC NOT NULL, date TEXT NOT NULL, category TEXT DEFAULT '',
@@ -302,6 +318,10 @@ import { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } fro
 const PLAID_CLIENT_ID = process.env.PLAID_CLIENT_ID || '';
 const PLAID_SECRET = process.env.PLAID_SECRET || '';
 const PLAID_ENV = process.env.PLAID_ENV || 'sandbox';
+// Set this to a publicly-reachable HTTPS URL (e.g. `${BASE_URL}/api/plaid/webhook`)
+// once deployed. Plaid uses it to notify us about item errors (like a bank
+// requiring re-login) and new transaction data, instead of us having to poll.
+const PLAID_WEBHOOK_URL = process.env.PLAID_WEBHOOK_URL || '';
 
 let plaidClient = null;
 if (PLAID_CLIENT_ID && PLAID_SECRET) {
@@ -312,7 +332,25 @@ if (PLAID_CLIENT_ID && PLAID_SECRET) {
 app.post('/api/plaid/create-link-token', authenticate, async (req, res) => {
   if (!plaidClient) return res.status(400).json({ error: 'Plaid not configured.' });
   try {
-    const r = await plaidClient.linkTokenCreate({ user: { client_user_id: String(req.user.id) }, client_name: 'Subscription Auditor', products: [Products.Transactions], country_codes: [CountryCode.Ca, CountryCode.Us], language: 'en' });
+    // Update mode: pass the item_id of a connection that needs re-auth (e.g.
+    // after ITEM_LOGIN_REQUIRED) to get a link_token that re-opens Link for
+    // that specific item, rather than creating a brand new connection.
+    let accessToken;
+    if (req.body?.item_id) {
+      const existing = await queryOne('SELECT access_token FROM plaid_tokens WHERE user_id=$1 AND item_id=$2', [req.user.id, req.body.item_id]);
+      if (!existing) return res.status(404).json({ error: 'Connection not found.' });
+      accessToken = existing.access_token;
+    }
+    const params = {
+      user: { client_user_id: String(req.user.id) },
+      client_name: 'Subscription Auditor',
+      products: accessToken ? undefined : [Products.Transactions],
+      access_token: accessToken,
+      country_codes: [CountryCode.Ca, CountryCode.Us],
+      language: 'en',
+    };
+    if (PLAID_WEBHOOK_URL) params.webhook = PLAID_WEBHOOK_URL;
+    const r = await plaidClient.linkTokenCreate(params);
     res.json({ link_token: r.data.link_token });
   } catch (err) { res.status(500).json({ error: err.message }) }
 });
@@ -321,14 +359,41 @@ app.post('/api/plaid/exchange-token', authenticate, async (req, res) => {
   if (!plaidClient) return res.status(400).json({ error: 'Plaid not configured.' });
   try {
     const ex = await plaidClient.itemPublicTokenExchange({ public_token: req.body.public_token });
-    await q('INSERT INTO plaid_tokens (user_id, access_token, item_id, institution_name) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',
+    await q(`INSERT INTO plaid_tokens (user_id, access_token, item_id, institution_name) VALUES ($1,$2,$3,$4)
+              ON CONFLICT (user_id, item_id) DO UPDATE SET access_token = EXCLUDED.access_token, institution_name = EXCLUDED.institution_name, needs_reauth = FALSE`,
       [req.user.id, ex.data.access_token, ex.data.item_id, req.body.institution_name || '']);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }) }
 });
 
 app.get('/api/plaid/connections', authenticate, async (req, res) => {
-  res.json(await queryAll('SELECT id, item_id, institution_name FROM plaid_tokens WHERE user_id = $1', [req.user.id]));
+  res.json(await queryAll('SELECT id, item_id, institution_name, needs_reauth FROM plaid_tokens WHERE user_id = $1', [req.user.id]));
+});
+
+// Plaid calls this endpoint directly (no user session), so it is
+// intentionally not behind `authenticate`. It tells us when an Item needs
+// the user to re-authenticate (e.g. they changed their bank password) or
+// when new transaction data is ready, instead of us having to poll blindly.
+app.post('/api/plaid/webhook', async (req, res) => {
+  try {
+    const { webhook_type, webhook_code, item_id } = req.body || {};
+    if (!item_id) return res.status(200).json({ ok: true });
+
+    if (webhook_type === 'ITEM' && ['ERROR', 'PENDING_EXPIRATION', 'PENDING_DISCONNECT'].includes(webhook_code)) {
+      const errorCode = req.body?.error?.error_code;
+      if (webhook_code !== 'ERROR' || errorCode === 'ITEM_LOGIN_REQUIRED') {
+        await q('UPDATE plaid_tokens SET needs_reauth=TRUE WHERE item_id=$1', [item_id]);
+      }
+    }
+    // TRANSACTIONS webhooks (e.g. SYNC_UPDATES_AVAILABLE) are informational
+    // here since /api/plaid/sync already does a full cursor-based sync on
+    // demand; nothing further to do until the user next opens the app.
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('Plaid webhook error:', err.message);
+    // Still return 200 so Plaid doesn't endlessly retry a webhook we can't process.
+    res.status(200).json({ ok: false });
+  }
 });
 
 app.post('/api/plaid/sync', authenticate, async (req, res) => {
@@ -355,7 +420,12 @@ app.post('/api/plaid/sync', authenticate, async (req, res) => {
       if (cursor) {
         await q('UPDATE plaid_tokens SET sync_cursor=$1 WHERE id=$2', [cursor, t.id]);
       }
-    } catch (err) { console.error('Plaid sync error:', err.message) }
+    } catch (err) {
+      console.error('Plaid sync error:', err.message)
+      if (err?.response?.data?.error_code === 'ITEM_LOGIN_REQUIRED' || err.message === 'ITEM_LOGIN_REQUIRED') {
+        await q('UPDATE plaid_tokens SET needs_reauth=TRUE WHERE id=$1', [t.id]);
+      }
+    }
   }
   const totalCount = (await queryOne('SELECT COUNT(*) as c FROM plaid_transactions WHERE user_id=$1', [req.user.id])).c;
   const recurring = await queryAll(`SELECT merchant_name, name, COUNT(*) as count, ROUND(AVG(amount),2) as avg_amount, MIN(date) as first, MAX(date) as last FROM plaid_transactions WHERE user_id=$1 AND pending=0 GROUP BY merchant_name, name HAVING COUNT(*)>=2 ORDER BY COUNT(*) DESC`, [req.user.id]);

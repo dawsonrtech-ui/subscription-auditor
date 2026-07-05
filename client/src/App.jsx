@@ -26,6 +26,7 @@ function App() {
 
   // Plaid
   const [plaidConnected, setPlaidConnected] = useState(false)
+  const [plaidConnections, setPlaidConnections] = useState([])
   const [plaidRecurring, setPlaidRecurring] = useState([])
   const [plaidImportCount, setPlaidImportCount] = useState(0)
   const [plaidLoading, setPlaidLoading] = useState(false)
@@ -141,7 +142,7 @@ function App() {
   }
 
   // Plaid
-  async function fetchPlaidStatus() { try { const c = await api('/plaid/connections'); setPlaidConnected(c.length > 0) } catch {} }
+  async function fetchPlaidStatus() { try { const c = await api('/plaid/connections'); setPlaidConnected(c.length > 0); setPlaidConnections(c) } catch {} }
   async function syncTransactions() {
     setPlaidLoading(true)
     try { const d = await api('/plaid/sync', { method: 'POST' }); setPlaidImportCount(d.imported); setPlaidRecurring(d.recurring || []); showToast(`Imported ${d.imported} transactions, ${d.recurring.length} recurring merchants`, 'success') }
@@ -240,6 +241,8 @@ function App() {
             showToast={showToast}
             plaidConnected={plaidConnected}
             setPlaidConnected={setPlaidConnected}
+            plaidConnections={plaidConnections}
+            onReconnected={fetchPlaidStatus}
             plaidRecurring={plaidRecurring}
             plaidImportCount={plaidImportCount}
             plaidLoading={plaidLoading}
