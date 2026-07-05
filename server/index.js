@@ -3,6 +3,7 @@ import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import pkg from 'pg';
+import Stripe from 'stripe';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -23,8 +24,69 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-prod';
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
+
+// ── Stripe billing ──
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
+const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID || '';
+const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 14);
+const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 app.use(cors());
+
+// IMPORTANT: Stripe's webhook signature verification needs the raw,
+// unparsed request body. This route is therefore registered with its own
+// express.raw() parser and placed BEFORE the global express.json() below —
+// Express runs middleware/routes in registration order, so this route
+// fully handles and responds to matching requests before express.json()
+// ever gets a chance to parse (and thereby corrupt, for signature purposes)
+// the body.
+app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe || !STRIPE_WEBHOOK_SECRET) return res.status(400).send('Stripe not configured');
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('Stripe webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = event.data.object;
+        const userId = session.client_reference_id;
+        if (userId) {
+          await q('UPDATE users SET stripe_customer_id=$1, stripe_subscription_id=$2 WHERE id=$3',
+            [session.customer, session.subscription, userId]);
+        }
+        break;
+      }
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated': {
+        const sub = event.data.object;
+        const trialEndsAt = sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null;
+        await q('UPDATE users SET subscription_status=$1, trial_ends_at=$2, stripe_subscription_id=$3 WHERE stripe_customer_id=$4',
+          [sub.status, trialEndsAt, sub.id, sub.customer]);
+        break;
+      }
+      case 'customer.subscription.deleted': {
+        const sub = event.data.object;
+        await q('UPDATE users SET subscription_status=$1 WHERE stripe_customer_id=$2', ['canceled', sub.customer]);
+        break;
+      }
+      default:
+        break; // other event types are ignored for now
+    }
+    res.json({ received: true });
+  } catch (err) {
+    console.error('Stripe webhook handling error:', err.message);
+    // Still 200 so Stripe doesn't endlessly retry an event we can't process.
+    res.status(200).json({ received: true, error: err.message });
+  }
+});
+
 app.use(express.json());
 app.use(express.static(join(__dirname, '..', 'client', 'dist')));
 
@@ -37,8 +99,16 @@ async function initDb() {
       email TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
       notify_before_days INTEGER DEFAULT 3,
-      created_at TEXT DEFAULT (NOW())
+      created_at TEXT DEFAULT (NOW()),
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT,
+      subscription_status TEXT NOT NULL DEFAULT 'none',
+      trial_ends_at TEXT
     );
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT NOT NULL DEFAULT 'none';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_ends_at TEXT;
     CREATE TABLE IF NOT EXISTS subscriptions (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id),
@@ -126,6 +196,60 @@ app.post('/api/auth/login', async (req, res) => {
   if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, email: user.email, notify_before_days: user.notify_before_days });
+});
+
+// ═══════════════════════════════════════════════
+//  BILLING (Stripe)
+// ═══════════════════════════════════════════════
+
+// Current billing state for the logged-in user. Fast (reads our own DB,
+// kept in sync by the webhook above) rather than calling Stripe live.
+app.get('/api/billing/status', authenticate, async (req, res) => {
+  const user = await queryOne('SELECT subscription_status, trial_ends_at FROM users WHERE id=$1', [req.user.id]);
+  const active = ['trialing', 'active'].includes(user?.subscription_status);
+  res.json({
+    status: user?.subscription_status || 'none',
+    trial_ends_at: user?.trial_ends_at || null,
+    active,
+    configured: !!stripe,
+  });
+});
+
+// Creates a Stripe Checkout session for a new subscription with a free
+// trial. client_reference_id links the session back to our user so the
+// webhook can attach the resulting customer/subscription to their account.
+app.post('/api/billing/create-checkout-session', authenticate, async (req, res) => {
+  if (!stripe || !STRIPE_PRICE_ID) return res.status(400).json({ error: 'Billing is not configured.' });
+  try {
+    const user = await queryOne('SELECT * FROM users WHERE id=$1', [req.user.id]);
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer_email: user.stripe_customer_id ? undefined : user.email,
+      customer: user.stripe_customer_id || undefined,
+      client_reference_id: String(req.user.id),
+      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
+      subscription_data: { trial_period_days: TRIAL_DAYS },
+      allow_promotion_codes: true,
+      success_url: `${CLIENT_URL}/?billing=success`,
+      cancel_url: `${CLIENT_URL}/?billing=cancelled`,
+    });
+    res.json({ url: session.url });
+  } catch (err) { res.status(500).json({ error: err.message }) }
+});
+
+// Sends the user to Stripe's hosted Billing Portal to update their card,
+// view invoices, or cancel — we don't need to build any of that ourselves.
+app.post('/api/billing/create-portal-session', authenticate, async (req, res) => {
+  if (!stripe) return res.status(400).json({ error: 'Billing is not configured.' });
+  const user = await queryOne('SELECT stripe_customer_id FROM users WHERE id=$1', [req.user.id]);
+  if (!user?.stripe_customer_id) return res.status(400).json({ error: 'No billing account yet — start a subscription first.' });
+  try {
+    const session = await stripe.billingPortal.sessions.create({
+      customer: user.stripe_customer_id,
+      return_url: `${CLIENT_URL}/`,
+    });
+    res.json({ url: session.url });
+  } catch (err) { res.status(500).json({ error: err.message }) }
 });
 
 // ── Subscriptions CRUD ──

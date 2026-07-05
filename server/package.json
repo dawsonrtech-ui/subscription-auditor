@@ -17,7 +17,8 @@
     "jsonwebtoken": "^9.0.0",
     "nodemailer": "^6.9.0",
     "pg": "^8.22.0",
-    "plaid": "^28.0.0"
+    "plaid": "^28.0.0",
+    "stripe": "^17.3.0"
   },
   "devDependencies": {
     "supertest": "^7.0.0",

@@ -9,8 +9,15 @@ in Gmail before they turn into forgotten renewals.
 
 ```
 client/   React + Vite frontend
-server/   Express API (Postgres, JWT auth, Plaid, Gmail, email notifications)
+server/   Express API (Postgres, JWT auth, Plaid, Gmail, Stripe billing, email notifications)
+legal/    Privacy Policy / Terms of Service drafts (NOT lawyer-reviewed - see draft notices in each file)
 ```
+
+Billing: the app supports an optional Stripe-powered subscription with a
+free trial (`TRIAL_DAYS`, default 14). If `STRIPE_SECRET_KEY` isn't set,
+the app runs with no paywall at all — useful for local dev. See
+`server/.env.example` for the full list of Stripe-related variables and
+how to set up a webhook endpoint (including the Stripe CLI for local testing).
 
 ## Local development
 

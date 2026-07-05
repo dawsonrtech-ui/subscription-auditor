@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import AuthScreen from './components/AuthScreen'
+import BillingGate from './components/BillingGate'
 import Toast from './components/Toast'
 import TabNav from './components/TabNav'
 import DashboardTab from './components/DashboardTab'
@@ -45,6 +46,10 @@ function App() {
   const [budgets, setBudgets] = useState([])
   const [priceCompares, setPriceCompares] = useState([])
 
+  // Billing
+  const [billing, setBilling] = useState(null)
+  const [billingLoading, setBillingLoading] = useState(false)
+
   // Toast
   const [toast, setToast] = useState(null)
 
@@ -62,9 +67,16 @@ function App() {
   useEffect(() => {
     if (token) {
       fetchSubs(); fetchSummary(); fetchBudgets()
-      fetchPlaidStatus(); fetchGmailStatus(); fetchNotifySettings()
+      fetchPlaidStatus(); fetchGmailStatus(); fetchNotifySettings(); fetchBillingStatus()
       if (window.location.search.includes('gmail=connected')) {
         fetchGmailStatus()
+        window.history.replaceState({}, '', '/')
+      }
+      if (window.location.search.includes('billing=success')) {
+        showToast('Subscription started! Enjoy your free trial.', 'success')
+        fetchBillingStatus()
+        window.history.replaceState({}, '', '/')
+      } else if (window.location.search.includes('billing=cancelled')) {
         window.history.replaceState({}, '', '/')
       }
     }
@@ -141,6 +153,18 @@ function App() {
     } catch (err) { showToast(err.message, 'error') }
   }
 
+  // Billing
+  async function fetchBillingStatus() { try { const b = await api('/billing/status'); setBilling(b) } catch {} }
+  async function startCheckout() {
+    setBillingLoading(true)
+    try { const { url } = await api('/billing/create-checkout-session', { method: 'POST' }); window.location.href = url }
+    catch (err) { showToast(err.message, 'error'); setBillingLoading(false) }
+  }
+  async function openBillingPortal() {
+    try { const { url } = await api('/billing/create-portal-session', { method: 'POST' }); window.location.href = url }
+    catch (err) { showToast(err.message, 'error') }
+  }
+
   // Plaid
   async function fetchPlaidStatus() { try { const c = await api('/plaid/connections'); setPlaidConnected(c.length > 0); setPlaidConnections(c) } catch {} }
   async function syncTransactions() {
@@ -181,11 +205,15 @@ function App() {
   }
 
   return (
+    <BillingGate billing={billing} billingLoading={billingLoading} onStartCheckout={startCheckout}>
     <div className="min-h-screen bg-gray-900 text-gray-100">
       <Toast toast={toast} />
       <header className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between">
         <h1 className="text-xl font-bold">Subscription Auditor</h1>
         <div className="flex items-center gap-4">
+          {billing?.configured && (
+            <button onClick={openBillingPortal} className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded cursor-pointer">Manage Billing</button>
+          )}
           <button onClick={exportCSV} className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded cursor-pointer">Export CSV</button>
           <span className="text-sm text-gray-400">{email}</span>
           <button onClick={logout} className="text-sm text-red-400 hover:text-red-300 cursor-pointer">Logout</button>
@@ -279,6 +307,7 @@ function App() {
 
       </main>
     </div>
+    </BillingGate>
   )
 }
 
